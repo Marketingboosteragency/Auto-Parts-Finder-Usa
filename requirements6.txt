@@ -1,5 +1,5 @@
 # ================================================================
-# AUTO PARTS FINDER USA - REQUIREMENTS.TXT
+# AUTO PARTS FINDER USA - REQUIREMENTS.TXT (Optimized for Render.com)
 # Sistema profesional de búsqueda de repuestos automotrices
 # ================================================================
 
@@ -8,169 +8,101 @@
 # ================================
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-gunicorn==21.2.0
 
 # ================================
 # VALIDACIÓN Y SERIALIZACIÓN
 # ================================
 pydantic==2.5.0
-pydantic[email]==2.5.0
-typing-extensions==4.8.0
+pydantic-settings==2.1.0
 
 # ================================
 # CLIENTE HTTP Y REQUESTS
 # ================================
 httpx==0.25.2
-aiohttp==3.9.1
-requests==2.31.0
-urllib3==2.1.0
 
 # ================================
-# PROCESAMIENTO DE IMÁGENES Y OCR
+# PROCESAMIENTO DE IMÁGENES Y OCR (OPCIONAL)
 # ================================
-Pillow==10.4.0
-pytesseract==0.3.10
-opencv-python-headless==4.8.1.78
-numpy==1.26.0
+Pillow==10.1.0
+# pytesseract==0.3.10  # Uncomment if OCR is needed
+# opencv-python-headless==4.8.1.78  # Uncomment if OCR is needed
+numpy==1.24.3
+
 # ================================
 # MANEJO DE ARCHIVOS Y FORMULARIOS
 # ================================
 python-multipart==0.0.6
-aiofiles==23.2.0
 
 # ================================
 # CONFIGURACIÓN Y VARIABLES DE ENTORNO
 # ================================
 python-dotenv==1.0.0
-pydantic-settings==2.1.0
-
-# ================================
-# AUTENTICACIÓN Y SEGURIDAD
-# ================================
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-cryptography==41.0.7
-
-# ================================
-# CACHÉ Y REDIS (OPCIONAL)
-# ================================
-redis==5.0.1
-aioredis==2.0.1
-
-# ================================
-# VALIDADORES Y UTILIDADES
-# ================================
-validators==0.22.0
-python-dateutil==2.8.2
-pytz==2023.3
-
-# ================================
-# LOGGING Y MONITOREO
-# ================================
-loguru==0.7.2
-structlog==23.2.0
-
-# ================================
-# RATE LIMITING Y MIDDLEWARE
-# ================================
-slowapi==0.1.9
-
-# ================================
-# TESTING Y DESARROLLO (OPCIONAL)
-# ================================
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
-faker==20.1.0
-
-# ================================
-# SERIALIZACIÓN Y FORMATO
-# ================================
-orjson==3.9.10
-python-slugify==8.0.1
-bleach==6.1.0
 
 # ================================
 # UTILIDADES DEL SISTEMA
 # ================================
 psutil==5.9.6
-click==8.1.7
-rich==13.7.0
-
-# ================================
-# BÚSQUEDA Y TEXTO
-# ================================
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.23.0
 
 # ================================
 # WEB SCRAPING Y PARSING
 # ================================
 beautifulsoup4==4.12.2
-lxml==4.9.3
 
 # ================================
-# OPTIMIZACIÓN Y PERFORMANCE
+# SERPAPI (si necesitas el cliente oficial)
 # ================================
-lru-dict==1.3.0
-cachetools==5.3.2
+# google-search-results==2.4.2  # Optional official client
 
 # ================================
-# VALIDACIÓN AVANZADA
-# ================================
-email-validator==2.1.0
-phonenumbers==8.13.26
-pycountry==23.12.11
-
-# ================================
-# SERPAPI CLIENT
-# ================================
-google-search-results==2.4.2
-
-# ================================
-# NOTAS DE INSTALACIÓN
+# NOTAS PARA RENDER.COM
 # ================================
 # 
-# INSTALACIÓN BÁSICA:
-# pip install -r requirements.txt
+# CONFIGURACIÓN RECOMENDADA PARA RENDER:
 # 
-# TESSERACT OCR (requerido para procesamiento de imágenes):
+# 1. Build Command:
+#    pip install -r requirements.txt
 # 
-# Ubuntu/Debian:
-# sudo apt-get update
-# sudo apt-get install tesseract-ocr tesseract-ocr-eng
+# 2. Start Command:
+#    uvicorn webapp:app --host 0.0.0.0 --port $PORT
 # 
-# CentOS/RHEL:
-# sudo yum install tesseract tesseract-langpack-eng
+# 3. Environment Variables necesarias:
+#    SERPAPI_KEY=tu_serpapi_key_aqui
+#    ENVIRONMENT=production
+#    LOG_LEVEL=INFO
+#    HOST=0.0.0.0
+#    PORT=10000
 # 
-# macOS:
-# brew install tesseract
+# 4. Para habilitar OCR (opcional):
+#    - Descomentar pytesseract y opencv-python-headless
+#    - Añadir buildpack en Render o usar Docker
 # 
-# Windows:
-# Descargar desde: https://github.com/tesseract-ocr/tesseract/wiki
+# 5. Optimización de memoria:
+#    - Esta configuración usa ~150-250MB RAM
+#    - Para apps más grandes, considera usar Render's paid plans
 # 
-# REDIS (opcional, para caché):
+# 6. Health check endpoint:
+#    /api/v1/health
 # 
-# Ubuntu/Debian:
-# sudo apt-get install redis-server
+# DOCKERFILE ALTERNATIVO PARA RENDER (si necesitas OCR):
 # 
-# macOS:
-# brew install redis
+# FROM python:3.11-slim
 # 
-# VERIFICACIÓN DE INSTALACIÓN:
-# python -c "import fastapi, uvicorn, pydantic, httpx, PIL, pytesseract; print('Todas las dependencias principales instaladas correctamente')"
+# # Install system dependencies for OCR
+# RUN apt-get update && apt-get install -y \
+#     tesseract-ocr \
+#     tesseract-ocr-eng \
+#     libglib2.0-0 \
+#     libsm6 \
+#     libxext6 \
+#     libxrender-dev \
+#     libgomp1 \
+#     libglib2.0-0 \
+#     && rm -rf /var/lib/apt/lists/*
 # 
-# OPTIMIZACIONES PARA PRODUCCIÓN:
-# - Usar gunicorn con múltiples workers
-# - Configurar Redis para caché
-# - Configurar logging estructurado
+# WORKDIR /app
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+# COPY webapp.py .
 # 
-# MEMORY USAGE ESTIMADO:
-# - Instalación básica: ~200-300 MB
-# - Con todas las dependencias: ~500-700 MB
-# - Runtime típico: ~100-200 MB por worker
-# 
-# COMPATIBILIDAD:
-# - Python 3.9+
-# - Compatible con Docker
-# - Compatible con todas las plataformas cloud principales
+# EXPOSE $PORT
+# CMD uvicorn webapp:app --host 0.0.0.0 --port $PORT
