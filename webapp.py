@@ -31,7 +31,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from PIL import Image
-from pydantic import BaseModel, BaseSettings, Field, HttpUrl, validator
+from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
 
 # ================================================================
 # CONFIGURACIÓN Y SETTINGS
@@ -243,7 +245,7 @@ class TextSearchRequest(BaseModel):
     sort_by: SortOption = Field(default=SortOption.PRICE_LOW_TO_HIGH)
     max_results: int = Field(default=5, ge=1, le=50)
     
-    @validator('query')
+    @field_validator('query')
     def validate_query(cls, v):
         cleaned = v.strip()
         if len(cleaned) < 3:
