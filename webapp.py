@@ -20,20 +20,26 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
-import cv2
 import httpx
 import numpy as np
 import psutil
-import pytesseract
+try:
+    import pytesseract
+    import cv2
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    print("⚠️ OCR libraries not available - image search disabled")
+
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic_settings import BaseSettings
 from pydantic import BaseModel, Field, HttpUrl, field_validator
-
 
 # ================================================================
 # CONFIGURACIÓN Y SETTINGS
@@ -76,7 +82,7 @@ class Settings(BaseSettings):
     
     # Imágenes
     MAX_IMAGE_SIZE_MB: int = Field(default=10, env="MAX_IMAGE_SIZE_MB")
-    OCR_ENABLED: bool = Field(default=True, env="OCR_ENABLED")
+    OCR_ENABLED: bool = Field(default=OCR_AVAILABLE, env="OCR_ENABLED")
     TESSERACT_CMD: Optional[str] = Field(default=None, env="TESSERACT_CMD")
     
     # Caché
@@ -467,7 +473,8 @@ class ImageProcessor:
     """Procesador de imágenes con OCR optimizado"""
     
     def __init__(self):
-        self._verify_tesseract()
+        if OCR_AVAILABLE:
+            self._verify_tesseract()
         
         self.part_number_patterns = [
             r'\b[A-Z]{2,4}[-\s]?\d{3,8}[-\s]?[A-Z]?\b',
@@ -488,6 +495,9 @@ class ImageProcessor:
         ]
     
     def _verify_tesseract(self):
+        if not OCR_AVAILABLE:
+            raise OCRProcessingError("OCR libraries not available")
+        
         try:
             if settings.TESSERACT_CMD:
                 pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
@@ -506,7 +516,7 @@ class ImageProcessor:
         try:
             image = Image.open(io.BytesIO(image_data))
             
-            if image.format.lower() not in ['jpeg', 'jpg', 'png', 'webp', 'bmp']:
+            if image.format and image.format.lower() not in ['jpeg', 'jpg', 'png', 'webp', 'bmp']:
                 raise InvalidImageError(f"Formato no soportado: {image.format}")
             
             if image.width < 50 or image.height < 50:
@@ -527,6 +537,9 @@ class ImageProcessor:
             raise InvalidImageError(f"Imagen corrupta: {e}")
     
     def _preprocess_image(self, image_array: np.ndarray) -> np.ndarray:
+        if not OCR_AVAILABLE:
+            return image_array
+        
         try:
             if len(image_array.shape) == 3:
                 gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
@@ -549,6 +562,9 @@ class ImageProcessor:
             return image_array
     
     def _extract_text_with_ocr(self, image_array: np.ndarray) -> Tuple[str, float]:
+        if not OCR_AVAILABLE:
+            return "", 0.0
+        
         try:
             config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-./() '
             
@@ -604,6 +620,9 @@ class ImageProcessor:
         confidence_threshold: float = 0.5
     ) -> OCRResult:
         start_time = time.time()
+        
+        if not OCR_AVAILABLE:
+            raise OCRProcessingError("OCR not available - missing libraries")
         
         try:
             image_pil = Image.open(io.BytesIO(image_data))
@@ -841,7 +860,7 @@ class SearchService:
             if not price_str:
                 return None
             
-            price_validator = get_price_validator()
+            price_validator = _price_validator
             price = price_validator.validate_price(price_str)
             if not price:
                 return None
@@ -933,7 +952,7 @@ class SearchService:
         start_time = time.time()
         
         try:
-            cache = await get_cache_manager()
+            cache = _cache
             cache_key = f"search_{hash(request.query + str(request.filters.dict()))}"
             cached_result = cache.get(cache_key)
             
@@ -950,14 +969,14 @@ class SearchService:
             if not raw_results:
                 raise NoResultsFoundError(request.query)
             
-            geo_filter = await get_geo_filter()
+            geo_filter = _geo_filter
             us_results = await geo_filter.filter_results(raw_results)
             
             if not us_results:
                 raise NoResultsFoundError(request.query)
             
             products = []
-            antifraud = await get_antifraud_analyzer()
+            antifraud = _antifraud
             
             for raw_result in us_results:
                 product = self._convert_raw_to_product(raw_result)
@@ -1031,9 +1050,8 @@ async def lifespan(app: FastAPI):
         logger.error("❌ SERPAPI_KEY no configurado correctamente")
         raise RuntimeError("SERPAPI_KEY requerido")
     
-    if settings.OCR_ENABLED:
+    if settings.OCR_ENABLED and OCR_AVAILABLE:
         try:
-            import pytesseract
             pytesseract.get_tesseract_version()
             logger.info("✅ Tesseract OCR disponible")
         except Exception as e:
@@ -1060,7 +1078,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.is_development else ["https://yourdomain.com"],
+    allow_origins=["*"] if settings.is_development else ["*"],  # Cambiar en producción
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1097,37 +1115,762 @@ if settings.RATE_LIMIT_ENABLED:
 # ENDPOINTS
 # ================================================================
 
-@app.get("/", include_in_schema=False)
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {
-        "service": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "description": settings.DESCRIPTION,
-        "status": "operational",
-        "documentation": "/docs",
-        "health_check": "/api/v1/health",
-        "features": [
-            "🔍 Búsqueda inteligente de repuestos automotrices",
-            "🌍 Filtrado geográfico estricto (solo EE.UU.)",
-            "💰 Verificación de precios en tiempo real",
-            "🛡️ Sistema antifraude avanzado",
-            "📷 Búsqueda por imagen con OCR",
-            "⚡ Caché para performance optimizada"
-        ],
-        "endpoints": {
-            "text_search": "/api/v1/search/text",
-            "image_search": "/api/v1/search/image",
-            "suggestions": "/api/v1/search/suggestions",
-            "health": "/api/v1/health",
-            "metrics": "/api/v1/health/metrics"
+    """Página principal del sitio web"""
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Parts Finder USA</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔧</text></svg>">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-    }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 20px 0;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            color: white;
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            color: rgba(255, 255, 255, 0.9);
+            text-align: center;
+            font-size: 1.2rem;
+            margin-top: 10px;
+        }
+        
+        .search-section {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            margin-bottom: 40px;
+        }
+        
+        .search-tabs {
+            display: flex;
+            margin-bottom: 30px;
+            gap: 10px;
+        }
+        
+        .tab-button {
+            flex: 1;
+            padding: 15px 25px;
+            border: none;
+            background: #f8f9fa;
+            color: #666;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .tab-button.active {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .search-form {
+            display: none;
+        }
+        
+        .search-form.active {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .form-group input, 
+        .form-group select {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .search-button {
+            width: 100%;
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .search-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        }
+        
+        .search-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .results-header {
+            background: white;
+            padding: 20px 40px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+        }
+        
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        
+        .product-card {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+        }
+        
+        .product-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.15);
+        }
+        
+        .product-image {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+            background: #f8f9fa;
+        }
+        
+        .product-info {
+            padding: 20px;
+        }
+        
+        .product-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            line-height: 1.4;
+            color: #333;
+        }
+        
+        .product-price {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #28a745;
+            margin-bottom: 10px;
+        }
+        
+        .product-vendor {
+            color: #666;
+            margin-bottom: 15px;
+        }
+        
+        .product-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        
+        .badge-sale {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .badge-shipping {
+            background: #17a2b8;
+            color: white;
+        }
+        
+        .badge-reliability {
+            background: #ffc107;
+            color: #333;
+        }
+        
+        .product-button {
+            width: 100%;
+            padding: 12px 20px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            text-align: center;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+        
+        .product-button:hover {
+            background: #5a6fd8;
+            transform: translateY(-1px);
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .features {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            border-radius: 20px;
+            margin-bottom: 40px;
+        }
+        
+        .features h2 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2rem;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+        }
+        
+        .feature {
+            text-align: center;
+            color: white;
+        }
+        
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+        }
+        
+        .feature h3 {
+            margin-bottom: 10px;
+            font-size: 1.3rem;
+        }
+        
+        .feature p {
+            opacity: 0.9;
+            line-height: 1.6;
+        }
+        
+        .footer {
+            background: rgba(0, 0, 0, 0.2);
+            color: white;
+            padding: 30px 0;
+            text-align: center;
+        }
+        
+        .image-preview {
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 10px;
+            margin-top: 10px;
+            border: 2px solid #e9ecef;
+        }
+        
+        @media (max-width: 768px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+            
+            .search-tabs {
+                flex-direction: column;
+            }
+            
+            .product-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .search-section {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1>🔧 Auto Parts Finder USA</h1>
+            <p>Find genuine auto parts from trusted US retailers</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="search-section">
+            <div class="search-tabs">
+                <button class="tab-button active" onclick="switchTab('text')">🔍 Text Search</button>
+                <button class="tab-button" onclick="switchTab('image')">📷 Image Search</button>
+            </div>
+
+            <!-- Text Search Form -->
+            <form id="textSearchForm" class="search-form active">
+                <div class="form-group">
+                    <label for="searchQuery">Search for auto parts:</label>
+                    <input type="text" id="searchQuery" placeholder="e.g., brake pads, oil filter, spark plugs..." required>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="minPrice">Min Price ($):</label>
+                        <input type="number" id="minPrice" placeholder="0" min="0" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label for="maxPrice">Max Price ($):</label>
+                        <input type="number" id="maxPrice" placeholder="1000" min="0" step="0.01">
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="sortBy">Sort by:</label>
+                        <select id="sortBy">
+                            <option value="price_asc">Price: Low to High</option>
+                            <option value="price_desc">Price: High to Low</option>
+                            <option value="reliability">Reliability</option>
+                            <option value="relevance">Relevance</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="maxResults">Max Results:</label>
+                        <select id="maxResults">
+                            <option value="5">5 results</option>
+                            <option value="10">10 results</option>
+                            <option value="15">15 results</option>
+                            <option value="20">20 results</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <button type="submit" class="search-button">Search Parts</button>
+            </form>
+
+            <!-- Image Search Form -->
+            <form id="imageSearchForm" class="search-form">
+                <div class="form-group">
+                    <label for="imageFile">Upload part image:</label>
+                    <input type="file" id="imageFile" accept="image/*" required>
+                    <img id="imagePreview" class="image-preview" style="display: none;">
+                </div>
+                
+                <div class="form-group">
+                    <label for="fallbackText">Fallback text (optional):</label>
+                    <input type="text" id="fallbackText" placeholder="Enter part number if image doesn't work...">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="enhanceImage">Enhance image:</label>
+                        <select id="enhanceImage">
+                            <option value="true">Yes (recommended)</option>
+                            <option value="false">No</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="confidenceThreshold">OCR Confidence:</label>
+                        <select id="confidenceThreshold">
+                            <option value="0.3">Low (30%)</option>
+                            <option value="0.5" selected>Medium (50%)</option>
+                            <option value="0.7">High (70%)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <button type="submit" class="search-button">Search by Image</button>
+            </form>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Searching for parts...</p>
+        </div>
+
+        <div class="results" id="results">
+            <div class="results-header">
+                <h2 id="resultsTitle">Search Results</h2>
+                <p id="resultsInfo"></p>
+            </div>
+            <div class="product-grid" id="productGrid"></div>
+        </div>
+
+        <div class="features">
+            <div class="container">
+                <h2>Why Choose Auto Parts Finder USA?</h2>
+                <div class="features-grid">
+                    <div class="feature">
+                        <div class="feature-icon">🔍</div>
+                        <h3>Smart Search</h3>
+                        <p>Advanced search algorithms find the exact parts you need from trusted US retailers.</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🛡️</div>
+                        <h3>Anti-Fraud Protection</h3>
+                        <p>Built-in fraud detection ensures you only see genuine, authentic auto parts.</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">📷</div>
+                        <h3>Image Recognition</h3>
+                        <p>Upload a photo of your part and let our OCR technology identify it instantly.</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">💰</div>
+                        <h3>Best Prices</h3>
+                        <p>Compare prices across multiple retailers to find the best deals on quality parts.</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🇺🇸</div>
+                        <h3>US Only</h3>
+                        <p>Exclusively searches US-based retailers for faster shipping and better service.</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">⚡</div>
+                        <h3>Fast Results</h3>
+                        <p>Get instant results with cached searches and optimized performance.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="container">
+            <p>&copy; 2024 Auto Parts Finder USA. All rights reserved. | Professional auto parts search system.</p>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        function switchTab(tab) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update forms
+            document.querySelectorAll('.search-form').forEach(form => form.classList.remove('active'));
+            document.getElementById(tab + 'SearchForm').classList.add('active');
+        }
+
+        // Image preview
+        document.getElementById('imageFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const preview = document.getElementById('imagePreview');
+            
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    preview.src = e.target.result;
+                    preview.style.display = 'block';
+                };
+                reader.readAsDataURL(file);
+            } else {
+                preview.style.display = 'none';
+            }
+        });
+
+        // Text search form submission
+        document.getElementById('textSearchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const query = document.getElementById('searchQuery').value;
+            const minPrice = document.getElementById('minPrice').value;
+            const maxPrice = document.getElementById('maxPrice').value;
+            const sortBy = document.getElementById('sortBy').value;
+            const maxResults = document.getElementById('maxResults').value;
+            
+            if (!query.trim()) {
+                alert('Please enter a search query');
+                return;
+            }
+            
+            await performSearch('text', {
+                query: query,
+                min_price: minPrice ? parseFloat(minPrice) : null,
+                max_price: maxPrice ? parseFloat(maxPrice) : null,
+                sort_by: sortBy,
+                max_results: parseInt(maxResults)
+            });
+        });
+
+        // Image search form submission
+        document.getElementById('imageSearchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const imageFile = document.getElementById('imageFile').files[0];
+            const fallbackText = document.getElementById('fallbackText').value;
+            const enhanceImage = document.getElementById('enhanceImage').value === 'true';
+            const confidenceThreshold = parseFloat(document.getElementById('confidenceThreshold').value);
+            
+            if (!imageFile) {
+                alert('Please select an image file');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('image', imageFile);
+            formData.append('max_results', '5');
+            formData.append('enhance_image', enhanceImage);
+            formData.append('confidence_threshold', confidenceThreshold);
+            if (fallbackText) {
+                formData.append('ocr_fallback_text', fallbackText);
+            }
+            
+            await performSearch('image', formData);
+        });
+
+        // Perform search function
+        async function performSearch(type, data) {
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const searchButton = document.querySelector('.search-button');
+            
+            // Show loading
+            loading.style.display = 'block';
+            results.classList.remove('show');
+            searchButton.disabled = true;
+            searchButton.textContent = 'Searching...';
+            
+            try {
+                let response;
+                
+                if (type === 'text') {
+                    // Build query string for GET request
+                    const params = new URLSearchParams();
+                    params.append('q', data.query);
+                    if (data.min_price !== null) params.append('min_price', data.min_price);
+                    if (data.max_price !== null) params.append('max_price', data.max_price);
+                    params.append('sort_by', data.sort_by);
+                    params.append('max_results', data.max_results);
+                    
+                    response = await fetch(`/api/v1/search/text?${params}`);
+                } else {
+                    // Image search with FormData
+                    response = await fetch('/api/v1/search/image', {
+                        method: 'POST',
+                        body: data
+                    });
+                }
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail?.message || 'Search failed');
+                }
+                
+                const result = await response.json();
+                displayResults(result);
+                
+            } catch (error) {
+                console.error('Search error:', error);
+                displayError(error.message);
+            } finally {
+                // Hide loading
+                loading.style.display = 'none';
+                searchButton.disabled = false;
+                searchButton.textContent = type === 'text' ? 'Search Parts' : 'Search by Image';
+            }
+        }
+
+        // Display results function
+        function displayResults(data) {
+            const results = document.getElementById('results');
+            const resultsTitle = document.getElementById('resultsTitle');
+            const resultsInfo = document.getElementById('resultsInfo');
+            const productGrid = document.getElementById('productGrid');
+            
+            // Update header
+            resultsTitle.textContent = `Found ${data.total_count} parts`;
+            resultsInfo.innerHTML = `
+                <strong>Query:</strong> ${data.original_query} |
+                <strong>Search Time:</strong> ${data.metrics.search_time_ms}ms |
+                <strong>Source:</strong> ${data.search_type} search
+            `;
+            
+            // Clear and populate product grid
+            productGrid.innerHTML = '';
+            
+            if (data.products.length === 0) {
+                productGrid.innerHTML = '<div class="error">No parts found. Try a different search term.</div>';
+            } else {
+                data.products.forEach(product => {
+                    const productCard = createProductCard(product);
+                    productGrid.appendChild(productCard);
+                });
+            }
+            
+            // Show results
+            results.classList.add('show');
+            
+            // Scroll to results
+            results.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Create product card function
+        function createProductCard(product) {
+            const card = document.createElement('div');
+            card.className = 'product-card';
+            
+            const badges = [];
+            if (product.is_on_sale) {
+                badges.push('<span class="badge badge-sale">ON SALE</span>');
+            }
+            if (product.shipping_speed !== 'standard') {
+                badges.push(`<span class="badge badge-shipping">${product.shipping_speed.replace('_', ' ').toUpperCase()}</span>`);
+            }
+            if (product.reliability_score >= 4) {
+                badges.push(`<span class="badge badge-reliability">${'⭐'.repeat(product.reliability_score)}</span>`);
+            }
+            
+            card.innerHTML = `
+                ${product.primary_image_url 
+                    ? `<img src="${product.primary_image_url}" alt="${product.title}" class="product-image" onerror="this.style.display='none'">` 
+                    : '<div class="product-image" style="display: flex; align-items: center; justify-content: center; background: #f8f9fa; color: #666;">No Image</div>'
+                }
+                <div class="product-info">
+                    <h3 class="product-title">${product.title}</h3>
+                    <div class="product-price">$${product.price}</div>
+                    <div class="product-vendor">Sold by: ${product.vendor_name}</div>
+                    <div class="product-badges">
+                        ${badges.join('')}
+                    </div>
+                    <a href="${product.product_url}" target="_blank" class="product-button">
+                        View Product
+                    </a>
+                </div>
+            `;
+            
+            return card;
+        }
+
+        // Display error function
+        function displayError(message) {
+            const results = document.getElementById('results');
+            const productGrid = document.getElementById('productGrid');
+            
+            document.getElementById('resultsTitle').textContent = 'Search Error';
+            document.getElementById('resultsInfo').textContent = '';
+            
+            productGrid.innerHTML = `
+                <div class="error">
+                    <strong>Error:</strong> ${message}
+                    <br><br>
+                    Please try again with a different search term or check your internet connection.
+                </div>
+            `;
+            
+            results.classList.add('show');
+        }
+
+        // Auto-focus search input
+        document.getElementById('searchQuery').focus();
+    </script>
+</body>
+</html>
+    """, media_type="text/html")
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(
         openapi_url=app.openapi_url,
-        title=f"{app.title} - Documentación Interactiva",
+        title=f"{app.title} - Interactive Documentation",
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
     )
@@ -1136,7 +1879,7 @@ async def custom_swagger_ui_html():
 async def redoc_html():
     return get_redoc_html(
         openapi_url=app.openapi_url,
-        title=f"{app.title} - Documentación ReDoc",
+        title=f"{app.title} - ReDoc Documentation",
         redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.1.0/bundles/redoc.standalone.js",
     )
 
@@ -1197,13 +1940,19 @@ async def search_parts_by_image(
     - 🏷️ Detección de marcas y especificaciones
     - 📝 Texto de respaldo opcional
     """
+    if not OCR_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="Image search not available - OCR libraries not installed"
+        )
+    
     search_id = search_service.generate_search_id()
     
     try:
         image_processor = await get_image_processor()
         image_data = await image.read()
         
-        image_info = await image_processor.process_image_upload(image_data, image.filename)
+        image_info = await image_processor.process_image_upload(image_data, image.filename or "image")
         
         ocr_result = await image_processor.extract_text_from_image(
             image_data=image_data,
@@ -1304,6 +2053,7 @@ async def detailed_health_check():
     components = {}
     overall_status = "healthy"
     
+    # Check SerpAPI
     try:
         client = await get_serpapi_client()
         components["serpapi"] = {
@@ -1318,9 +2068,9 @@ async def detailed_health_check():
         }
         overall_status = "degraded"
     
+    # Check OCR
     try:
-        if settings.OCR_ENABLED:
-            import pytesseract
+        if settings.OCR_ENABLED and OCR_AVAILABLE:
             pytesseract.get_tesseract_version()
             components["ocr"] = {
                 "status": "healthy",
@@ -1328,8 +2078,8 @@ async def detailed_health_check():
             }
         else:
             components["ocr"] = {
-                "status": "disabled",
-                "message": "OCR disabled in configuration"
+                "status": "disabled" if not settings.OCR_ENABLED else "unavailable",
+                "message": "OCR disabled in configuration" if not settings.OCR_ENABLED else "OCR libraries not available"
             }
     except Exception as e:
         components["ocr"] = {
@@ -1338,8 +2088,9 @@ async def detailed_health_check():
         }
         overall_status = "degraded"
     
+    # Check cache
     try:
-        cache = await get_cache_manager()
+        cache = _cache
         test_key = f"health_test_{time.time()}"
         cache.set(test_key, {"test": True})
         retrieved = cache.get(test_key)
@@ -1355,6 +2106,7 @@ async def detailed_health_check():
         }
         overall_status = "degraded"
     
+    # Check system resources
     try:
         memory = psutil.virtual_memory()
         cpu_percent = psutil.cpu_percent(interval=1)
@@ -1417,7 +2169,7 @@ async def get_system_metrics():
                 "version": settings.VERSION,
                 "environment": settings.ENVIRONMENT,
                 "features": {
-                    "ocr_enabled": settings.OCR_ENABLED,
+                    "ocr_enabled": settings.OCR_ENABLED and OCR_AVAILABLE,
                     "cache_enabled": settings.CACHE_ENABLED,
                     "rate_limiting_enabled": settings.RATE_LIMIT_ENABLED,
                     "price_verification_enabled": settings.PRICE_VERIFICATION_ENABLED
