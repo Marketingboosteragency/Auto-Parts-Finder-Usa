@@ -1,8 +1,170 @@
-# Requirements MÍNIMOS para debug - Solo lo esencial
+# ================================================================
+# AUTO PARTS FINDER USA - REQUIREMENTS.TXT (Optimized for Render.com)
+# Sistema profesional de búsqueda de repuestos automotrices
+# Versión corregida para resolver errores de SerpAPI
+# ================================================================
+
+# ================================
+# FRAMEWORK WEB PRINCIPAL
+# ================================
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+
+# ================================
+# VALIDACIÓN Y SERIALIZACIÓN
+# ================================
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# ================================
+# CLIENTE HTTP Y REQUESTS (ENHANCED)
+# ================================
 httpx==0.25.2
+aiohttp==3.9.1  # Backup HTTP client
+requests==2.31.0  # Fallback for compatibility
+
+# ================================
+# PROCESAMIENTO DE IMÁGENES Y OCR (OPCIONAL)
+# ================================
+Pillow==10.1.0
+numpy==1.24.3
+# pytesseract==0.3.10  # Uncomment if OCR is needed
+# opencv-python-headless==4.8.1.78  # Uncomment if OCR is needed
+
+# ================================
+# MANEJO DE ARCHIVOS Y FORMULARIOS
+# ================================
 python-multipart==0.0.6
 
-# Sin dependencias complejas que puedan causar problemas
-# Esta configuración funciona 100% en Render.com
+# ================================
+# CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# ================================
+python-dotenv==1.0.0
+
+# ================================
+# UTILIDADES DEL SISTEMA
+# ================================
+psutil==5.9.6
+
+# ================================
+# WEB SCRAPING Y PARSING
+# ================================
+beautifulsoup4==4.12.2
+lxml==4.9.3  # Enhanced XML/HTML parsing
+
+# ================================
+# SERPAPI Y BÚSQUEDA (ENHANCED)
+# ================================
+google-search-results==2.4.2  # Official SerpAPI client (optional)
+
+# ================================
+# LOGGING Y MONITOREO
+# ================================
+structlog==23.2.0  # Better logging for production
+
+# ================================
+# SEGURIDAD Y VALIDACIÓN
+# ================================
+email-validator==2.1.0.post1  # For pydantic email validation
+phonenumbers==8.13.26  # For phone number validation
+
+# ================================
+# OPTIMIZACIONES PARA RENDER.COM
+# ================================
+gunicorn==21.2.0  # Alternative WSGI server
+gevent==23.9.1    # Async worker for gunicorn
+
+# ================================
+# NOTAS PARA RENDER.COM - CONFIGURACIÓN CORREGIDA
+# ================================
+# 
+# COMANDOS PARA RENDER:
+# 
+# 1. Build Command:
+#    pip install --upgrade pip && pip install -r requirements.txt
+# 
+# 2. Start Command (OPCIÓN 1 - Recomendada):
+#    python webapp.py
+# 
+# 3. Start Command (OPCIÓN 2 - Alternativa):
+#    uvicorn webapp:app --host 0.0.0.0 --port $PORT --log-level info
+# 
+# 4. Start Command (OPCIÓN 3 - Con Gunicorn):
+#    gunicorn webapp:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+# 
+# 5. Environment Variables OBLIGATORIAS:
+#    SERPAPI_KEY=tu_serpapi_key_real_aqui
+#    ENVIRONMENT=production
+#    LOG_LEVEL=INFO
+#    HOST=0.0.0.0
+# 
+# 6. Environment Variables OPCIONALES:
+#    PORT=10000 (Render lo asigna automáticamente)
+#    CACHE_ENABLED=true
+#    RATE_LIMIT_ENABLED=true
+#    OCR_ENABLED=false (mantener deshabilitado para reducir memoria)
+# 
+# 7. Para habilitar OCR (NO RECOMENDADO en Render Free Tier):
+#    - Descomentar pytesseract y opencv-python-headless
+#    - Usar Docker deployment en lugar de Native Environment
+# 
+# 8. Configuración de memoria optimizada:
+#    - Esta configuración usa ~100-200MB RAM
+#    - Compatible con Render Free Tier (512MB límite)
+# 
+# 9. Health check endpoint para Render:
+#    URL: https://tu-app.onrender.com/api/v1/health
+# 
+# 10. Documentación de API:
+#     URL: https://tu-app.onrender.com/docs
+# 
+# RESOLUCIÓN DE PROBLEMAS COMUNES:
+# 
+# Error "Search failed":
+# - Verificar que SERPAPI_KEY esté configurado correctamente
+# - Verificar que la clave no esté expirada o sin créditos
+# - Comprobar conectividad de red desde Render
+# 
+# Error de timeout:
+# - Aumentar SERPAPI_TIMEOUT a 45 segundos
+# - Verificar que los requests no excedan el límite de Render (30s)
+# 
+# Error de memoria:
+# - Mantener OCR deshabilitado
+# - Reducir CACHE_MAX_SIZE si es necesario
+# - Considerar upgrade a plan pago de Render
+# 
+# DOCKERFILE ALTERNATIVO PARA OCR (si necesitas OCR completo):
+# 
+# FROM python:3.11-slim
+# 
+# # Install system dependencies for OCR
+# RUN apt-get update && apt-get install -y \
+#     tesseract-ocr \
+#     tesseract-ocr-eng \
+#     libglib2.0-0 \
+#     libsm6 \
+#     libxext6 \
+#     libxrender-dev \
+#     libgomp1 \
+#     && rm -rf /var/lib/apt/lists/*
+# 
+# WORKDIR /app
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+# COPY webapp.py .
+# 
+# EXPOSE $PORT
+# CMD ["python", "webapp.py"]
+# 
+# EJEMPLO DE .env PARA DESARROLLO LOCAL:
+# 
+# SERPAPI_KEY=tu_serpapi_key_aqui
+# ENVIRONMENT=development
+# DEBUG=true
+# LOG_LEVEL=DEBUG
+# HOST=127.0.0.1
+# PORT=8000
+# CACHE_ENABLED=true
+# RATE_LIMIT_ENABLED=false
+# OCR_ENABLED=false
