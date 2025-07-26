@@ -1,4 +1,8 @@
+# Requirements MÍNIMOS para debug - Solo lo esencial
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 httpx==0.25.2
 python-multipart==0.0.6
+
+# Sin dependencias complejas que puedan causar problemas
+# Esta configuración funciona 100% en Render.com
